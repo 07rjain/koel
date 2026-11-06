@@ -1,0 +1,58 @@
+name: Draft release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Validate tag and changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 scripts/version.py check)
+          if [[ "$RELEASE_TAG" != "v$version" ]]; then
+            echo "The release tag must match VERSION (v$version)." >&2
+            exit 1
+          fi
+          mkdir -p build
+          python3 scripts/version.py notes > build/release-notes.md
+      - name: Ensure CMake is installed
+        run: command -v cmake || brew install cmake
+      - name: Validate
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py'
+          scripts/test-swift.sh
+          cargo fmt --all -- --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+      - name: Build release app
+        run: scripts/build-app.sh release
+      - name: Create draft with versioned archive and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          version=$(python3 scripts/version.py check)
+          gh release create "$RELEASE_TAG" \
+            "dist/LocalWhisper-$version-macos-arm64.zip" \
+            "dist/LocalWhisper-$version-macos-arm64.zip.sha256" \
+            --verify-tag --draft --title "Local Whisper $version" \
+            --notes-file build/release-notes.md

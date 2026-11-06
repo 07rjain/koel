@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Local Whisper</string>
+	<key>CFBundleDisplayName</key>
+	<string>Local Whisper</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.localwhisper.desktop</string>
+	<key>CFBundleExecutable</key>
+	<string>Local Whisper</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.0</string>
+	<key>CFBundleVersion</key>
+	<string>2001</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Record your voice for transcription using the provider you select.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Transcribe speech on your Mac with Apple's speech model.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

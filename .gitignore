@@ -1,0 +1,9 @@
+/target/
+/build/
+/dist/
+.DS_Store
+*.wav
+*.aiff
+.env
+__pycache__/
+*.pyc
