@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var liveTranscriptItem: NSMenuItem?
     private let hotKey = HotKey()
     private let fnHotKey = FnHotKey()
+    var testFnOnLaunch = false
+    private var testingFn = false
     private var recording = RecordingLifecycle()
     private var isRecording: Bool { recording.isRecording }
     private var isBusy = false
@@ -43,13 +45,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         hotKey.onPress = { [weak self] in self?.toggleRecording() }
         do { try hotKey.register() } catch { message = error.localizedDescription }
+        testingFn = testFnOnLaunch
+        if testingFn { message = "Fn test active · microphone stays off" }
+        fnHotKey.onDiagnostic = { [weak self] text in
+            guard self?.testingFn == true else { return }
+            FileHandle.standardError.write(Data(("[Fn Test] \(text)\n").utf8))
+        }
         fnHotKey.onGesture = { [weak self] action in self?.handleFn(action) }
-        fnHotKey.onAvailabilityChange = { [weak self] in self?.rebuildMenu() }
+        fnHotKey.onAvailabilityChange = { [weak self] in
+            self?.rebuildMenu()
+            self?.reportShortcutStatus()
+        }
         fnHotKey.onInterrupted = { [weak self] in
             guard let self, self.recording.isFnOwned else { return }
             self.requestStopRecording()
         }
         fnHotKey.start()
+        reportShortcutStatus()
         Task {
             do {
                 status = try await Core.status()
@@ -63,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         fnHotKey.stop()
+        hotKey.unregister()
         recordingTimer?.invalidate()
         recorder.cleanUp()
         liveMicrophone.stop()
@@ -123,6 +136,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         record.keyEquivalent = " "
         record.keyEquivalentModifierMask = [.command, .shift]
         menu.addItem(record)
+        if !fnHotKey.isMonitoring {
+            menu.addItem(item("Enable Fn Dictation…", action: #selector(setUpFn), enabled: !isBusy && !isRecording))
+        }
         if isRecording { menu.addItem(item("Discard Recording", action: #selector(discardRecording))) }
         if isRecording && appleSession != nil {
             menu.addItem(item("Live Transcript"))
@@ -137,8 +153,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         shortcuts.addItem(item("⌘⇧Space to start / stop"))
         shortcuts.addItem(.separator())
         shortcuts.addItem(item(fnHotKey.statusText))
+        shortcuts.addItem(item(hotKey.statusText))
+        shortcuts.addItem(item(fnHotKey.lastDiagnostic))
+        let fnTest = item("Test Fn Gestures (No Microphone)", action: #selector(toggleFnTest), enabled: !isBusy && !isRecording)
+        fnTest.state = testingFn ? .on : .off
+        shortcuts.addItem(fnTest)
+        shortcuts.addItem(item("Copy Fn Diagnostics", action: #selector(copyFnDiagnostics)))
+        if DictationPermissions.current().secureKeyboardEntry {
+            shortcuts.addItem(item("Secure Keyboard Entry is active; key shortcuts may be blocked"))
+        }
         shortcuts.addItem(item("Set Up Fn / Globe Key…", action: #selector(setUpFn), enabled: !isBusy && !isRecording))
         let canConfigure = !isBusy && !isRecording
+        let permissions = DictationPermissions.current()
+        let permissionMenu = submenu("Permissions", in: menu)
+        permissionMenu.addItem(item("Microphone: \(permissions.microphone)…", action: #selector(enableMicrophone), enabled: canConfigure))
+        permissionMenu.addItem(item(permissions.accessibility ? "Accessibility: Allowed…" : "Enable Accessibility (Fn + Pasting)…",
+                                    action: #selector(enablePasting), enabled: canConfigure))
+        permissionMenu.addItem(item(permissions.inputMonitoring ? "Input Monitoring: Allowed…" : "Input Monitoring (Alternative for Fn)…",
+                                    action: #selector(enableFnInputMonitoring), enabled: canConfigure))
         if let status {
             let config = status.config
             menu.addItem(.separator())
@@ -328,7 +360,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startRecording(source: source)
     }
 
+    @objc private func toggleFnTest() {
+        guard !isBusy && !recording.hasSession else { return }
+        testingFn.toggle()
+        fnHotKey.clearDiagnostics()
+        message = testingFn ? "Fn test active · microphone stays off · double-tap or hold Fn" : "Fn test ended · Ready"
+        rebuildMenu()
+    }
+
+    @objc private func copyFnDiagnostics() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(fnHotKey.diagnosticReport, forType: .string)
+        message = "Fn diagnostics copied · no typed text or audio"
+        rebuildMenu()
+    }
+
     private func handleFn(_ action: FnGesture.Action) {
+        if testingFn {
+            switch action {
+            case .toggle: message = "Fn test: Double tap recognized"
+            case .beginHold: message = "Fn test: Hold recognized"
+            case .endHold: return
+            }
+            rebuildMenu()
+            return
+        }
         switch action {
         case .beginHold: startRecording(source: .fnHold)
         case .endHold: requestStopRecording(only: .fnHold)
@@ -563,27 +619,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func enablePasting() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+        DictationPermissions.requestAccessibility()
+        openSystemSettings("com.apple.preference.security?Privacy_Accessibility")
+    }
+
+    @objc private func enableMicrophone() {
+        guard !isBusy && !isRecording else { return }
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .notDetermined {
+            openSystemSettings("com.apple.preference.security?Privacy_Microphone")
+            return
+        }
+        isBusy = true
+        Task {
+            do { try await AudioRecorder.requirePermission(); message = "Microphone access enabled" }
+            catch { message = error.localizedDescription; showError(error) }
+            isBusy = false
+            reportShortcutStatus()
+            rebuildMenu()
+        }
+    }
+
+    @objc private func enableFnInputMonitoring() {
+        fnHotKey.requestAccess()
+        openSystemSettings("com.apple.preference.security?Privacy_ListenEvent")
+    }
+
+    private func openSystemSettings(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:\(pane)") { NSWorkspace.shared.open(url) }
+    }
+
+    private func reportShortcutStatus() {
+        let permissions = DictationPermissions.current()
+        let report = "[Shortcuts] \(hotKey.statusText); \(fnHotKey.statusText); Microphone: \(permissions.microphone); Accessibility: \(permissions.accessibility); Secure Keyboard Entry: \(permissions.secureKeyboardEntry)\n"
+        // Permission and registration state only; no keys, speech, or transcripts.
+        FileHandle.standardError.write(Data(report.utf8))
     }
 
     @objc private func setUpFn() {
         let alert = NSAlert()
         alert.messageText = "Fn / Globe Dictation"
-        alert.informativeText = "Hold Fn for 0.3 seconds, speak, then release to transcribe. Or double-tap Fn to start and double-tap again to stop.\n\nEnable Local Whisper in System Settings → Privacy & Security → Input Monitoring. If macOS asks, quit and reopen the app after granting access.\n\nIn System Settings → Keyboard, set ‘Press 🌐 key to’ (or ‘Press fn key to’) to ‘Do Nothing’. Also turn off or change the ‘Press Fn Twice’ shortcut under Keyboard → Dictation to avoid starting Apple Dictation too.\n\nFn combinations still work. ⌘⇧Space and the menu are always available."
-        alert.addButton(withTitle: "Enable Input Monitoring")
+        let permissions = DictationPermissions.current()
+        alert.informativeText = "Hold Fn for 0.3 seconds, speak when the recording indicator turns red, then release to transcribe. Or double-tap Fn within 0.5 seconds to start and double-tap again to stop.\n\nMicrophone: \(permissions.microphone)\nAccessibility: \(permissions.accessibility ? "Allowed" : "Not allowed")\n\(fnHotKey.statusText)\n\(hotKey.statusText)\n\nEnable Local Whisper in System Settings → Privacy & Security → Accessibility for Fn and automatic pasting. While Fn listening is active, Local Whisper automatically pauses the macOS standalone Globe action so emoji or Apple Dictation does not open. Your original action is restored on quit, sleep, or loss of keyboard access. Fn key combinations still work. Enable Microphone from the Permissions menu too.\n\nIf an enabled permission stopped working after a development update, remove Local Whisper from that permission’s list and add it again from ~/Applications. Reopen the app if macOS asks.\n\nInput Monitoring, available under Permissions, is an alternative for keyboard listening. Globe action handling is automatic with either permission; no manual Keyboard settings change is needed."
+        alert.addButton(withTitle: "Enable Accessibility")
         alert.addButton(withTitle: "Keyboard Settings")
         alert.addButton(withTitle: "Done")
         NSApp.activate(ignoringOtherApps: true)
         let response = alert.runModal()
         if response == .alertFirstButtonReturn {
-            fnHotKey.requestAccess()
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-                NSWorkspace.shared.open(url)
-            }
-        } else if response == .alertSecondButtonReturn,
-                  let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
-            NSWorkspace.shared.open(url)
+            enablePasting()
+        } else if response == .alertSecondButtonReturn {
+            openSystemSettings("com.apple.Keyboard-Settings.extension")
         }
         rebuildMenu()
     }
@@ -620,7 +705,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func showAbout() {
         let alert = NSAlert()
         alert.messageText = "Local Whisper \(currentVersion)"
-        alert.informativeText = "Rust transcription core · native macOS menu bar\n\nHold Fn to speak; release to transcribe.\nDouble-tap Fn or press ⌘⇧Space to start / stop.\nFn requires Input Monitoring access and keyboard setup.\n\nApple Speech and downloaded Hugging Face models run on device. Groq uploads audio to its API.\n\nRecordings are deleted after transcription. The last transcript stays in memory and the clipboard; no history is saved.\n\nApple silicon · macOS 26+"
+        alert.informativeText = "Rust transcription core · native macOS menu bar\n\nHold Fn to speak; release to transcribe.\nDouble-tap Fn or press ⌘⇧Space to start / stop.\nFn uses Accessibility or Input Monitoring access.\n\nApple Speech and downloaded Hugging Face models run on device. Groq uploads audio to its API.\n\nRecordings are deleted after transcription. The last transcript stays in memory and the clipboard; no history is saved.\n\nApple silicon · macOS 26+"
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
     }

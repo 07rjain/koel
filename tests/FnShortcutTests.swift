@@ -6,7 +6,17 @@ struct FnShortcutTests {
         testChordsAndInterruptions()
         testStartupRelease()
         testOwnership()
+        testPermissions()
+        testDoubleTapLifecycle()
         print("PASS: Fn holds, double taps, chords, interruptions, startup cancellation, and recording ownership")
+    }
+
+    static func testPermissions() {
+        precondition(KeyboardAccess(accessibility: true, inputMonitoring: false) == .accessibility,
+                     "Accessibility must support Fn without a second Input Monitoring grant")
+        precondition(KeyboardAccess(accessibility: false, inputMonitoring: true) == .inputMonitoring)
+        precondition(KeyboardAccess(accessibility: true, inputMonitoring: true) == .accessibility)
+        precondition(KeyboardAccess(accessibility: false, inputMonitoring: false) == .unavailable)
     }
 
     static func testHold() {
@@ -26,8 +36,10 @@ struct FnShortcutTests {
     }
 
     static func tap(_ gesture: inout FnGesture, at time: Double) -> FnGesture.Action? {
-        precondition(gesture.press(at: time, chord: false) == nil)
-        return gesture.release(at: time + 0.05)
+        let press = gesture.press(at: time, chord: false)
+        let release = gesture.release(at: time + 0.05)
+        precondition(press == nil || release == nil, "A tap must never emit two actions")
+        return press ?? release
     }
 
     static func testTaps() {
@@ -38,10 +50,39 @@ struct FnShortcutTests {
         precondition(tap(&gesture, at: 1.2) == .toggle, "Next double tap must stop via the same toggle action")
         precondition(tap(&gesture, at: 2) == nil)
         precondition(tap(&gesture, at: 3) == nil, "Slow taps must not toggle")
-        precondition(gesture.press(at: 3.2, chord: false) == nil)
-        precondition(gesture.advance(to: 3.51) == .beginHold, "Holding the second tap is a hold, not a toggle")
-        precondition(gesture.release(at: 4) == .endHold)
-        precondition(tap(&gesture, at: 4.1) == nil, "Hold release must not seed a double tap")
+        precondition(gesture.press(at: 3.2, chord: false) == .toggle, "Double tap must toggle on second down")
+        precondition(gesture.advance(to: 3.51) == nil, "A longer second press must not turn a double tap into a hold")
+        precondition(gesture.release(at: 4) == nil, "Second release must leave hands-free recording running")
+        precondition(tap(&gesture, at: 4.1) == nil, "Second release must not seed another double tap")
+
+        _ = gesture.reset()
+        precondition(tap(&gesture, at: 10) == nil)
+        precondition(gesture.press(at: 10.50, chord: false) == .toggle, "A 450 ms gap must be accepted")
+        precondition(gesture.release(at: 10.56) == nil)
+        precondition(tap(&gesture, at: 12) == nil)
+        precondition(tap(&gesture, at: 12.60) == nil, "A gap beyond 500 ms must not toggle")
+        _ = gesture.reset()
+        precondition(tap(&gesture, at: 14) == nil)
+        precondition(gesture.press(at: 13, chord: false) == nil, "Out-of-order timestamps must not toggle")
+    }
+
+    static func testDoubleTapLifecycle() {
+        var gesture = FnGesture()
+        var recording = RecordingLifecycle()
+        precondition(tap(&gesture, at: 0) == nil)
+        precondition(gesture.press(at: 0.45, chord: false) == .toggle)
+        precondition(recording.begin(.fnToggle))
+        precondition(gesture.advance(to: 0.8) == nil)
+        precondition(gesture.release(at: 0.9) == nil)
+        precondition(recording.shouldStart, "Second release must not cancel asynchronous microphone startup")
+        precondition(recording.didStart())
+
+        precondition(tap(&gesture, at: 2) == nil)
+        precondition(gesture.press(at: 2.45, chord: false) == .toggle)
+        precondition(recording.requestStop(), "Next double tap must stop hands-free dictation")
+        recording.reset()
+        precondition(gesture.release(at: 2.9) == nil)
+        precondition(tap(&gesture, at: 4) == nil, "Start/stop pairs must not leak taps into another pair")
     }
 
     static func testChordsAndInterruptions() {
@@ -55,7 +96,7 @@ struct FnShortcutTests {
         precondition(gesture.release(at: 5) == nil)
         precondition(tap(&gesture, at: 6) == nil)
         precondition(gesture.interrupt() == nil)
-        precondition(tap(&gesture, at: 6.2) == nil, "Typing/clicking between taps must break the gesture")
+        precondition(tap(&gesture, at: 6.2) == nil, "An explicit interruption between taps must break the gesture")
         _ = gesture.reset()
         precondition(gesture.press(at: 7, chord: false) == nil)
         precondition(gesture.advance(to: 7.31) == .beginHold)

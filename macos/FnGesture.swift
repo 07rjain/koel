@@ -3,7 +3,7 @@ struct FnGesture {
     enum Action: Equatable { case beginHold, endHold, toggle }
 
     static let holdDelay = 0.30
-    static let doubleTapWindow = 0.35
+    static let doubleTapWindow = 0.50
     private var pressedAt: Double?
     private var firstTapAt: Double?
     private var secondTap = false
@@ -14,13 +14,15 @@ struct FnGesture {
         guard pressedAt == nil else { return nil }
         pressedAt = time
         blocked = chord
-        secondTap = !chord && firstTapAt.map { time - $0 <= Self.doubleTapWindow } == true
+        secondTap = !chord && firstTapAt.map { (0...Self.doubleTapWindow).contains(time - $0) } == true
         firstTapAt = nil
-        return nil
+        // Latch on the second down. Waiting for its release can misclassify
+        // a slightly longer second tap as a new hold-to-talk session.
+        return secondTap ? .toggle : nil
     }
 
     mutating func advance(to time: Double) -> Action? {
-        guard let pressedAt, !blocked, !holding, time - pressedAt >= Self.holdDelay else { return nil }
+        guard let pressedAt, !blocked, !holding, !secondTap, time - pressedAt >= Self.holdDelay else { return nil }
         holding = true
         secondTap = false
         return .beginHold
@@ -35,9 +37,9 @@ struct FnGesture {
             blocked = false
         }
         if holding { return .endHold }
+        if secondTap { return nil }
         // A delayed timer must never turn a long press into a tap.
         guard !blocked, time - pressedAt < Self.holdDelay else { firstTapAt = nil; return nil }
-        if secondTap { firstTapAt = nil; return .toggle }
         firstTapAt = time
         return nil
     }

@@ -51,14 +51,20 @@ Recordings stop after five minutes. With Apple Speech selected, open the menu wh
 Both gestures work with Apple Speech, local models, and Groq, using the selected provider:
 
 - **Hold Fn:** hold for 0.3 seconds to start, speak, then release to stop and transcribe. Start speaking when the menu bar recording indicator turns red.
-- **Double-tap Fn:** tap twice with no more than 0.35 seconds between the first release and second press to start hands-free recording. Double-tap again to stop and transcribe.
+- **Double-tap Fn:** tap twice with no more than 0.5 seconds between the first release and second press to start hands-free recording. It switches on the second press; releasing that press keeps recording running. Double-tap again to stop and transcribe.
 - **⌘⇧Space:** continues to toggle recording without Fn setup. Start/stop is also available in the menu.
 
-Open **Keyboard Shortcuts → Set Up Fn / Globe Key** in the app menu. Enable Local Whisper in **System Settings → Privacy & Security → Input Monitoring**; quit and reopen it if macOS requests this. In **System Settings → Keyboard**, set **Press 🌐 key to** (or **Press fn key to**) to **Do Nothing**. Under **Keyboard → Dictation**, change or disable **Press Fn Twice** if selected, so Apple Dictation does not start alongside this app. Local Whisper does not change these system settings or suppress key events.
+Open **Enable Fn Dictation** or **Keyboard Shortcuts → Set Up Fn / Globe Key** in the app menu. Under **Permissions**, enable **Microphone** to capture speech and **Accessibility** for Fn and automatic pasting. Accessibility supports the keyboard listener without a separate Input Monitoring grant. **Input Monitoring** remains an alternative for Fn when you prefer to copy/paste transcripts manually. The menu shows current microphone access, the Fn listener's access method, ⌘⇧Space registration errors, and whether Secure Keyboard Entry is active. Quit and reopen the app if macOS requests this.
 
-A single tap does nothing. Combining Fn with another key cancels a pending hold/double tap, so Fn+arrows and other Fn shortcuts pass through normally. If another key is pressed during hold-to-talk, that hold stops. Releasing a hold does not stop a recording started with double-tap, the menu, or ⌘⇧Space. Sleep, session changes, and a disabled event listener stop Fn-owned recording. Fn must be exposed as the macOS Fn/Globe key; keyboards that handle Fn entirely in firmware cannot provide these gestures. Secure Input and other apps that intercept Fn can prevent event delivery; use the menu or ⌘⇧Space in that case.
+While the Fn listener is active, Local Whisper temporarily sets the macOS standalone Globe action to **Do Nothing**, applying it live. You do not need to change Keyboard settings. Your original action is saved before the change and restored on quit, sleep, session changes, or loss of keyboard access. A recovery record restores the original after an interrupted run when the app next opens, even if keyboard access is unavailable. Changes you make in System Settings take priority; reopen the app to give it control again. Fn key combinations pass through unchanged. This follows [OpenWhispr’s native Globe handling](https://github.com/OpenWhispr/openwhispr/blob/main/resources/macos-globe-listener.swift), using dynamically resolved Carbon entry points because macOS processes its standalone Globe action before event taps. If those entry points are unavailable or recovery storage cannot be written, the Keyboard Shortcuts menu reports the failure.
 
-If you release Fn while microphone permission or Apple Speech startup is pending, that attempt is cancelled before capture starts. Grant the permission, then hold Fn again. The passive keyboard listener handles only gesture state; it does not save or log typed text.
+If a gesture fails, enable **Keyboard Shortcuts → Test Fn Gestures (No Microphone)**. Close the menu, try the gesture, then reopen it to see the result. This mode routes Fn gestures to a status message instead of recording. **Copy Fn Diagnostics** copies the most recent Fn timings, recognized actions, and interruption reasons; it contains no typed key identities, transcript, or audio. Turn test mode off to resume Fn dictation. Launching the app with `--test-fn` enables this mode immediately and sends only these diagnostic messages to stderr. Modifier-flag transitions drive the listener, including releases with missing or different key-code metadata.
+
+Development builds are ad-hoc signed. A rebuild can invalidate a previous macOS Accessibility approval even when Settings still shows the app enabled. If this happens, remove that entry and add the installed app at `~/Applications/Local Whisper.app` again, then reopen it. Public Developer ID signing is needed for a stable publisher identity across builds.
+
+A single tap does nothing. Combining Fn with another key cancels a pending hold/double tap, so Fn+arrows and other Fn shortcuts pass through normally. If another key is pressed while Fn is held, that Fn gesture is cancelled and an active hold stops. As in OpenWhispr, key events arriving after Fn release do not cancel the pending double tap; macOS may emit auxiliary key events there. Releasing a hold does not stop a recording started with double-tap, the menu, or ⌘⇧Space. Sleep, session changes, and a disabled event listener stop Fn-owned recording. Fn must be exposed as the macOS Fn/Globe key; keyboards that handle Fn entirely in firmware cannot provide these gestures. Secure Input and other apps that intercept Fn can prevent event delivery; use the menu or ⌘⇧Space in that case.
+
+If you release Fn while microphone permission or Apple Speech startup is pending, that attempt is cancelled before capture starts. Grant the permission, then hold Fn again. The keyboard listener handles only gesture state; it does not save or log typed text. Startup diagnostics report permission and shortcut registration states without audio or transcript content.
 
 ## Providers
 
@@ -117,7 +123,7 @@ scripts/check.sh
 python3 scripts/smoke.py --apple
 ```
 
-`check.sh` runs version consistency checks, Python release-tool tests, native Swift tests, Rust formatting, Clippy with warnings denied, focused tests, and a complete native build with signature verification. Tests cover rejected audio formats, corrupted model files, atomic configuration validation, multipart Groq requests against a local HTTP fixture, and update handling for newer/equal/older versions, previews, missing releases, invalid responses, and rate limits. Swift tests check transcript revisions, Fn gesture timing/chords/interruptions, recording ownership, and release/stop requests during asynchronous startup. Shortcut tests use synthetic timestamps without injecting keys or recording microphone audio. GitHub Actions runs the same checks on macOS.
+`check.sh` runs version consistency checks, Python release-tool tests, native Swift tests, Rust formatting, Clippy with warnings denied, focused tests, and a complete native build with signature verification. Tests cover rejected audio formats, corrupted model files, atomic configuration validation, multipart Groq requests against a local HTTP fixture, and update handling for newer/equal/older versions, previews, missing releases, invalid responses, and rate limits. Swift tests check transcript revisions, Fn gesture timing/chords/interruptions, recording ownership, release/stop requests during asynchronous startup, and Accessibility/Input Monitoring alternatives. A native Carbon test dispatches events directly inside the test process to verify routing, shortcut identity filtering, and registration cleanup. Globe ownership tests simulate settings to verify restoration, crash recovery, user changes, and storage/API failures without modifying real preferences. Shortcut tests never inject system keystrokes or record microphone audio. GitHub Actions runs the same checks on macOS.
 
 `smoke.py` generates synthetic speech with macOS `say` and exercises real transcription through the Rust CLI, the Swift-to-Rust bridge, and optionally Apple Speech. The Apple check includes completed-file recognition and a paced 48 kHz stereo stream: it cancels/restarts a session, requires partial text before input ends, and checks the final text for duplication. It isolates its configuration and leaves your provider preferences unchanged. It needs Whisper Tiny installed; add `--download` to allow its download. `--apple` requires English (US) Apple assets prepared first. Add `--groq` only when you want to send the synthetic fixture to Groq with the key you entered in the app.
 
@@ -125,6 +131,7 @@ Useful diagnostics:
 
 ```sh
 "$HOME/Applications/Local Whisper.app/Contents/MacOS/Local Whisper" --diagnose
+"$HOME/Applications/Local Whisper.app/Contents/MacOS/Local Whisper" --diagnose-shortcuts
 "$HOME/Applications/Local Whisper.app/Contents/MacOS/Local Whisper" --version
 "$HOME/Applications/Local Whisper.app/Contents/MacOS/Local Whisper" --check-updates
 "$HOME/Applications/Local Whisper.app/Contents/MacOS/Local Whisper" --prepare-apple en-US
@@ -135,6 +142,15 @@ target/debug/local-whisper --help
 ```
 
 `LOCAL_WHISPER_DATA_DIR` overrides the data directory for development and isolated checks. The Rust CLI accepts JSON requests over stdin with `local-whisper request`; it never accepts API keys in command-line arguments.
+
+When diagnosing permissions, Launch Services can provide a more accurate app identity than launching its executable from a terminal (where macOS may attribute access to the terminal). To inspect the installed app's permissions without starting recording:
+
+```sh
+open -n "$HOME/Applications/Local Whisper.app" \
+  --stdout /tmp/local-whisper-permissions.json --args --diagnose-shortcuts
+```
+
+This one-shot diagnostic exits without registering shortcuts or opening the microphone. The running app's **Permissions** and **Keyboard Shortcuts** menus show its own current state.
 
 ## Layout and references
 

@@ -6,7 +6,7 @@ struct LocalWhisperApp {
     @MainActor
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
-        if !arguments.isEmpty {
+        if !arguments.isEmpty && arguments != ["--test-fn"] {
             Task { @MainActor in
                 do {
                     let engine = AppleSpeechEngine()
@@ -21,6 +21,16 @@ struct LocalWhisperApp {
                         let status = try await Core.status()
                         print(String(decoding: try JSONEncoder().encode(status), as: UTF8.self))
                         print(await engine.availability(locale: status.config.appleLocale))
+                        print(String(decoding: try JSONEncoder().encode(DictationPermissions.current()), as: UTF8.self))
+                    case "--diagnose-shortcuts":
+                        print(String(decoding: try JSONEncoder().encode(DictationPermissions.current()), as: UTF8.self))
+                    case "--request-accessibility":
+                        // Request approval for this installed app identity without
+                        // opening its microphone or starting another recorder.
+                        DictationPermissions.requestAccessibility()
+                        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                            NSWorkspace.shared.open(url)
+                        }
                     case "--prepare-apple":
                         let locale = arguments.count > 1 ? arguments[1] : "en-US"
                         try await engine.prepare(locale: locale)
@@ -49,7 +59,7 @@ struct LocalWhisperApp {
                         }
                         print(String(decoding: try JSONEncoder().encode(transcript), as: UTF8.self))
                     default:
-                        throw AppError("Use --version, --check-updates, --diagnose, --prepare-apple [locale], --apple-transcribe FILE.wav [locale], --apple-stream-file FILE.wav [locale], or --transcribe FILE.wav.")
+                        throw AppError("Use --version, --check-updates, --diagnose, --diagnose-shortcuts, --request-accessibility, --test-fn, --prepare-apple [locale], --apple-transcribe FILE.wav [locale], --apple-stream-file FILE.wav [locale], or --transcribe FILE.wav.")
                     }
                     lw_shutdown()
                     exit(0)
@@ -63,6 +73,7 @@ struct LocalWhisperApp {
         } else {
             let app = NSApplication.shared
             let delegate = AppDelegate()
+            delegate.testFnOnLaunch = arguments == ["--test-fn"]
             app.delegate = delegate
             withExtendedLifetime(delegate) { app.run() }
         }
